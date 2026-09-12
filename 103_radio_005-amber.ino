@@ -2,9 +2,7 @@
 Copyright (c)
 Arduino project by Tech Talkies YouTube Channel.
 https://www.youtube.com/@techtalkies1
-+ VU Metru Cinematic + Memorie NVS 
-+ JLX12864 Hardware SPI + Scroll Text + Ceas NTP
-+ MULTITHREADING AUDIO (Procesare pe Core 0)
++ MULTITHREADING PERFECT: Audio(Core 1) / UI(Core 0)
 -------------------------------------------------*/
 
 #include <WiFi.h>
@@ -38,6 +36,8 @@ https://www.youtube.com/@techtalkies1
 #define VOL_MAX 21
 #define INITIAL_VOLUME 18
 
+volatile bool eofReconnect = false;
+
 U8G2_ST7565_JLX12864_F_4W_HW_SPI u8g2(U8G2_R0, /* cs=*/ TFT_CS, /* dc=*/ TFT_DC, /* reset=*/ TFT_RST);
 
 struct CountryEntry { const char* code; const char* name; };
@@ -64,7 +64,10 @@ static const int GENRE_COUNT = sizeof(GENRES) / sizeof(GENRES[0]);
 Audio audio;
 QueueHandle_t encQueue;
 Preferences prefs;
-TaskHandle_t audioTaskHandle; // Referinta pentru nucleul audio separat
+
+// ── PROTECTII DE MEMORIE ──
+SemaphoreHandle_t titleMutex;
+char streamTitle[256] = "Loading...";
 
 enum EncEvent { EV_CW, EV_CCW, EV_PRESS, EV_LONG };
 enum UiMode { MODE_NORMAL, MODE_BROWSE, MODE_EDIT };
@@ -83,7 +86,6 @@ int currentStation = 0;
 int focusIndex = 0;
 UiMode uiMode = MODE_NORMAL;
 bool uiDirty = true;
-String streamTitle = "Loading...";
 int previewStation = 0;
 
 String previewTag = "all";
@@ -92,7 +94,6 @@ String searchTag = "all";
 String selectedGenre = "all";
 String selectedCountry = "RO";
 
-int bitrateCap = 96;
 bool muted = false;
 int currentVol = INITIAL_VOLUME;
 int lastVol = INITIAL_VOLUME;
@@ -103,16 +104,6 @@ volatile bool buttonHolding = false;
 int currentVuBars = 0; 
 int textScrollX = 0;     
 int scrollWait = 30;     
-
-// ── TASK-UL CARE RULEAZA EXCLUSIV PE CORE 0 ──
-// Acest motor de sunet va rula non-stop in fundal, fara a fi deranjat de grafica ecranului
-void core0AudioTask(void *parameter) {
-  for (;;) {
-    audio.loop();
-    // Oprim fortat task-ul 2 milisecunde pentru a lasa driverul Wi-Fi sa isi traga aer
-    vTaskDelay(pdMS_TO_TICKS(2)); 
-  }
-}
 
 bool fetchStations(String tag) {
   HTTPClient http;
@@ -160,7 +151,12 @@ bool fetchStations(String tag) {
 void playStation(int i) {
   if (i < 0 || i >= stationCount) return;
   currentStation = i;
-  streamTitle = stations[i].name;
+  
+  if (xSemaphoreTake(titleMutex, portMAX_DELAY)) {
+    strncpy(streamTitle, stations[i].name.c_str(), sizeof(streamTitle) - 1);
+    streamTitle[sizeof(streamTitle) - 1] = '\0';
+    xSemaphoreGive(titleMutex);
+  }
   
   textScrollX = 0;
   scrollWait = 30; 
@@ -218,7 +214,7 @@ void drawUI() {
 
   for (int i = 0; i < 12; i++) {
     int bx = 70 + i * 4;
-    if (i < audio.getVolume() * 12 / 21) {
+    if (i < currentVol * 12 / 21) {
       u8g2.drawBox(bx, 1, 3, 6);
     } else {
       u8g2.drawFrame(bx, 1, 3, 6);
@@ -241,14 +237,23 @@ void drawUI() {
       u8g2.drawRFrame(0, 12, 128, 14, 2); 
     }
     
-    int textWidth = u8g2.getStrWidth(streamTitle.c_str());
+    int textWidth = 0;
+    if (xSemaphoreTake(titleMutex, portMAX_DELAY)) {
+      textWidth = u8g2.getStrWidth(streamTitle);
+      xSemaphoreGive(titleMutex);
+    }
+
     if (textWidth <= 128) {
       int npX = (128 - textWidth) / 2;
       u8g2.setCursor(npX, 23);
     } else {
       u8g2.setCursor(textScrollX, 23);
     }
-    u8g2.print(streamTitle);
+    
+    if (xSemaphoreTake(titleMutex, portMAX_DELAY)) {
+      u8g2.print(streamTitle);
+      xSemaphoreGive(titleMutex);
+    }
   }
 
   String cCode = (uiMode == MODE_EDIT && focusIndex == F_COUNTRY) ? String(previewCountry) : (selectedCountry == "all" ? stations[currentStation].country : String(selectedCountry));
@@ -265,7 +270,6 @@ void drawUI() {
   int gW = u8g2.getStrWidth(gLabel.c_str()) + 6;
   chip(126 - gW, 30, gLabel, (focusIndex == F_TYPE && uiMode != MODE_NORMAL), (uiMode == MODE_EDIT && focusIndex == F_TYPE));
 
-  // 4. CEAS DIGITAL
   struct tm timeinfo;
   if (getLocalTime(&timeinfo, 0)) { 
     char timeStr[6];
@@ -273,8 +277,6 @@ void drawUI() {
     
     u8g2.setFont(u8g2_font_logisoso16_tf); 
     int tW = u8g2.getStrWidth(timeStr);
-    
-    // Calculat pentru centrul ecranului + mutat 5 pixeli la dreapta
     int tX = ((128 - tW) / 2) + 5;
     
     u8g2.setDrawColor(0);
@@ -303,7 +305,7 @@ void updateAnimations() {
   int bars = 0;
   static int lastBars = 0;
   
-  if (audio.isRunning() && audio.getVolume() > 0) {
+  if (audio.isRunning() && currentVol > 0) {
     int chance = random(100);
     if (chance > 85) bars = random(12, 16);       
     else if (chance > 45) bars = random(7, 13);   
@@ -326,13 +328,17 @@ void updateAnimations() {
 
   if (uiMode == MODE_NORMAL) {
     u8g2.setFont(u8g2_font_6x10_tf); 
-    int textWidth = u8g2.getStrWidth(streamTitle.c_str());
+    int textWidth = 0;
+    if (xSemaphoreTake(titleMutex, portMAX_DELAY)) {
+      textWidth = u8g2.getStrWidth(streamTitle);
+      xSemaphoreGive(titleMutex);
+    }
     
     if (textWidth > 128) {
       if (scrollWait > 0) {
         scrollWait--; 
       } else {
-        textScrollX -= 1; // Viteza 1 pixel pe cadru (cursiv)
+        textScrollX -= 1; 
         if (textScrollX < -textWidth) {
           textScrollX = 128;
         }
@@ -358,24 +364,25 @@ void handleEvent(uint8_t ev) {
 
   if (uiMode == MODE_NORMAL) {
     if (ev == EV_CW) {
-      currentVol = min(VOL_MAX, audio.getVolume() + 1);
+      currentVol = min(VOL_MAX, currentVol + 1);
       audio.setVolume(currentVol);
       prefs.putInt("vol", currentVol); 
     }
     else if (ev == EV_CCW) {
-      currentVol = max(0, audio.getVolume() - 1);
+      currentVol = max(0, currentVol - 1);
       audio.setVolume(currentVol);
       prefs.putInt("vol", currentVol); 
     }
     else if (ev == EV_PRESS) {
       muted = !muted;
       if (muted) {
-        lastVol = audio.getVolume();
+        lastVol = currentVol;
         audio.setVolume(0);
       } else {
-        audio.setVolume(lastVol);
-        prefs.putInt("vol", lastVol);
+        currentVol = lastVol;
+        audio.setVolume(currentVol);
       }
+      prefs.putInt("vol", currentVol);
     } else if (ev == EV_LONG) {
       uiMode = MODE_BROWSE;
       previewStation = currentStation;
@@ -463,9 +470,48 @@ void taskRotary(void* p) {
   }
 }
 
+// ── NUCLEUL GRAFIC (Core 0) ──
+void taskUI(void* p) {
+  for (;;) {
+    if ((uiMode == MODE_BROWSE || uiMode == MODE_EDIT) && millis() - browseLastAction > 10000) {
+      uiMode = MODE_NORMAL;
+      uiDirty = true;
+    }
+
+    static uint32_t lastAnim = 0;
+    if (millis() - lastAnim > 60) {
+      lastAnim = millis();
+      updateAnimations();
+    }
+
+    static uint32_t lastTimeCheck = 0;
+    if (millis() - lastTimeCheck > 1000) {
+      lastTimeCheck = millis();
+      struct tm timeinfo;
+      if (getLocalTime(&timeinfo, 0)) { 
+        static int lastMin = -1;
+        if (timeinfo.tm_min != lastMin) {
+          lastMin = timeinfo.tm_min;
+          uiDirty = true; 
+        }
+      }
+    }
+
+    if (uiDirty) {
+      drawUI();
+    }
+    
+    // Pauza foarte scurta ce mentine nucleul 0 sanatos pentru Wi-Fi
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+}
+
 void setup() {
   u8g2.begin();
+  u8g2.setBusClock(8000000); // Acceleram desenarea
   u8g2.setContrast(130); 
+  
+  titleMutex = xSemaphoreCreateMutex(); 
   
   prefs.begin("radio", false); 
   currentVol = prefs.getInt("vol", INITIAL_VOLUME);
@@ -477,9 +523,10 @@ void setup() {
   previewTag = selectedGenre;
   searchTag = selectedGenre;
   lastVol = currentVol;
-
+  
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  WiFi.setSleep(false); // Anulam restrictiile de baterie 
   
   u8g2.clearBuffer();
   u8g2.setFont(u8g2_font_6x10_tf);
@@ -496,60 +543,43 @@ void setup() {
   audio.setVolume(currentVol);
 
   encQueue = xQueueCreate(16, 1);
-  xTaskCreatePinnedToCore(taskRotary, "rotary", 4096, nullptr, 1, nullptr, 1);
-
-  // LANSAM TASK-UL AUDIO PE CORE 0 AICI!
-  xTaskCreatePinnedToCore(
-    core0AudioTask,
-    "AudioTask",
-    10000,
-    NULL,
-    1,
-    &audioTaskHandle,
-    0
-  );
+  
+  // LANSAM ENCODERUL SI ECRANUL PE CORE 0
+  xTaskCreatePinnedToCore(taskRotary, "rotary", 4096, nullptr, 1, nullptr, 0);
+  xTaskCreatePinnedToCore(taskUI, "ui", 10000, nullptr, 1, nullptr, 0);
 
   fetchStations(selectedGenre);
   if (savedStation >= stationCount) savedStation = 0; 
   playStation(savedStation);
 }
 
+// ── NUCLEUL AUDIO (Core 1 - Procesorul ruleaza DOAR asta) ──
 void loop() {
-  // audio.loop(); <-- ELIMINAT AICI, ACUM RULEAZA IN FUNDAL PE CORE 0
-  
+  audio.loop();
+
+  if (eofReconnect) {
+    eofReconnect = false;
+    playStation(currentStation); // Se execută curat, în afara contextului de eroare
+  }
+
   uint8_t ev;
-  while (xQueueReceive(encQueue, &ev, 0) == pdTRUE) handleEvent(ev);
-
-  if ((uiMode == MODE_BROWSE || uiMode == MODE_EDIT) && millis() - browseLastAction > 10000) {
-    uiMode = MODE_NORMAL;
-    uiDirty = true;
+  while (xQueueReceive(encQueue, &ev, 0) == pdTRUE) {
+    handleEvent(ev);
   }
-
-  static uint32_t lastAnim = 0;
-  if (millis() - lastAnim > 60) {
-    lastAnim = millis();
-    updateAnimations();
-  }
-
-  static uint32_t lastTimeCheck = 0;
-  if (millis() - lastTimeCheck > 1000) {
-    lastTimeCheck = millis();
-    struct tm timeinfo;
-    if (getLocalTime(&timeinfo, 0)) { 
-      static int lastMin = -1;
-      if (timeinfo.tm_min != lastMin) {
-        lastMin = timeinfo.tm_min;
-        uiDirty = true; 
-      }
-    }
-  }
-
-  if (uiDirty) drawUI();
 }
 
+// ── FUNCTII DE CALLBACK AUDIO ──
 void audio_showstreamtitle(const char* info) {
-  streamTitle = String(info);
+  if (xSemaphoreTake(titleMutex, portMAX_DELAY)) {
+    strncpy(streamTitle, info, sizeof(streamTitle) - 1);
+    streamTitle[sizeof(streamTitle) - 1] = '\0';
+    xSemaphoreGive(titleMutex);
+  }
   textScrollX = 0;
   scrollWait = 30;
   uiDirty = true;
+}
+
+void audio_eof_stream(const char* info) {
+  eofReconnect = true; // Doar ridicăm steagul, evitând blocarea stivei TCP
 }
