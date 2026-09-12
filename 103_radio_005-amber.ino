@@ -574,11 +574,21 @@ void loop() {
     playStation(currentStation); 
   }
 
-  uint8_t ev;
-  while (xQueueReceive(encQueue, &ev, 0) == pdTRUE) {
-    handleEvent(ev);
+  // --- AUDIO WATCHDOG (Auto-Recovery la blocaj total) ---
+  static uint32_t audioStuckTimer = 0;
+  if (!muted && currentVol > 0) {
+    if (!audio.isRunning()) {
+      if (audioStuckTimer == 0) {
+        audioStuckTimer = millis(); // Pornim cronometrul cand se opreste sunetul
+      } else if (millis() - audioStuckTimer > 500) { // Daca sta blocat peste 5 secunde
+        audioStuckTimer = 0;
+        playStation(currentStation); // Fortam reconectarea automata
+      }
+    } else {
+      audioStuckTimer = 0; // Totul functioneaza normal, resetam cronometrul
+    }
   }
-}
+  // -----------------------------------------------------
 
 // ── FUNCTII DE CALLBACK AUDIO ──
 void audio_showstreamtitle(const char* info) {
