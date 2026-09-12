@@ -37,6 +37,8 @@ https://www.youtube.com/@techtalkies1
 #define INITIAL_VOLUME 18
 
 volatile bool eofReconnect = false;
+volatile bool reqNewStation = false;
+char reqUrl[256] = "";
 
 U8G2_ST7565_JLX12864_F_4W_HW_SPI u8g2(U8G2_R0, /* cs=*/ TFT_CS, /* dc=*/ TFT_DC, /* reset=*/ TFT_RST);
 
@@ -161,7 +163,11 @@ void playStation(int i) {
   textScrollX = 0;
   scrollWait = 30; 
   
-  audio.connecttohost(stations[i].url.c_str());
+  // Copiem URL-ul in siguranta si semnalizam cererea pentru bucla audio
+  strncpy(reqUrl, stations[i].url.c_str(), sizeof(reqUrl) - 1);
+  reqUrl[sizeof(reqUrl) - 1] = '\0';
+  reqNewStation = true; 
+  
   uiDirty = true;
   prefs.putInt("station", currentStation);
 }
@@ -555,11 +561,17 @@ void setup() {
 
 // ── NUCLEUL AUDIO (Core 1 - Procesorul ruleaza DOAR asta) ──
 void loop() {
+  // Procesam cererea de schimbare post in mod asincron
+  if (reqNewStation) {
+    reqNewStation = false;
+    audio.connecttohost(reqUrl);
+  }
+
   audio.loop();
 
   if (eofReconnect) {
     eofReconnect = false;
-    playStation(currentStation); // Se execută curat, în afara contextului de eroare
+    playStation(currentStation); 
   }
 
   uint8_t ev;
