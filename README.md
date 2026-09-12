@@ -11,3 +11,4 @@ https://vlad-gheorghe.blogspot.com/2026/09/internet-radio.html
 
 103_radio_005-amber.ino adapted for LCD 128x64
 
+![poza](https://github.com/vlad-gheorghe/Internet-radio/blob/main/IMG20260912105526.jpg)
