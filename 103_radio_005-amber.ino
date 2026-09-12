@@ -547,6 +547,8 @@ void setup() {
 
   audio.setPinout(I2S_BCLK, I2S_LRCK, I2S_DOUT);
   audio.setVolume(currentVol);
+  // ADAUGĂ ACEASTĂ LINIE: Mărește memoria tampon internă pentru a rezista la micro-latențe
+ // audio.setBufsize(64 * 1024, 0); // Alocă un buffer de rețea generos
 
   encQueue = xQueueCreate(16, 1);
   
@@ -575,20 +577,27 @@ void loop() {
   }
 
   // --- AUDIO WATCHDOG (Auto-Recovery la blocaj total) ---
-  static uint32_t audioStuckTimer = 0;
+ /* static uint32_t audioStuckTimer = 0;
   if (!muted && currentVol > 0) {
     if (!audio.isRunning()) {
       if (audioStuckTimer == 0) {
         audioStuckTimer = millis(); // Pornim cronometrul cand se opreste sunetul
-      } else if (millis() - audioStuckTimer > 500) { // Daca sta blocat peste 5 secunde
+      } else if (millis() - audioStuckTimer > 200) { // Daca sta blocat peste 5 secunde
         audioStuckTimer = 0;
         playStation(currentStation); // Fortam reconectarea automata
       }
     } else {
       audioStuckTimer = 0; // Totul functioneaza normal, resetam cronometrul
     }
+    
   }
   // -----------------------------------------------------
+*/
+  uint8_t ev;
+  while (xQueueReceive(encQueue, &ev, 0) == pdTRUE) {
+    handleEvent(ev);
+  }
+}
 
 // ── FUNCTII DE CALLBACK AUDIO ──
 void audio_showstreamtitle(const char* info) {
