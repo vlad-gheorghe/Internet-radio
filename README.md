@@ -9,6 +9,6 @@ https://vlad-gheorghe.blogspot.com/2026/09/internet-radio.html
 ![poza](https://github.com/vlad-gheorghe/Internet-radio/blob/main/IMG20260901133816.jpg)
 
 
-103_radio_005-amber.ino adapted for LCD 128x64
+103_radio_005-amber.ino adapted for a 128x64 LCD and dual CPUs—one for sound and one for graphics
 
 ![poza](https://github.com/vlad-gheorghe/Internet-radio/blob/main/IMG20260912105526.jpg)
