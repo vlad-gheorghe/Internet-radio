@@ -7,3 +7,7 @@ My contribution: I removed the filters so that it could find stations with all e
 https://vlad-gheorghe.blogspot.com/2026/09/internet-radio.html
 
 ![poza](https://github.com/vlad-gheorghe/Internet-radio/blob/main/IMG20260901133816.jpg)
+
+
+103_radio_005-amber.ino adapted for LCD 128x64
+
